@@ -22,34 +22,55 @@ jobs:
       - name: Pick asset name
         id: pick
         run: |
-          python - <<'PY'
+          # Write the JSON safely to a temporary file (prevents quoting issues)
+          printf '%s' '${{ toJson(steps.getrel.outputs) }}' > /tmp/release_info.json
+
+          # Read that file in Python and write outputs to GITHUB_OUTPUT
+          python3 - <<'PY'
           import json
+          import os
           import sys
-          data = json.loads('${{ toJson(steps.getrel.outputs) }}')
-          assets = data.get('assets', [])
-          # pick first matching extension
-          exts = ['.zip', '.exe', '.msi']
+
+          PATH = "/tmp/release_info.json"
+          try:
+              with open(PATH, "r", encoding="utf-8") as f:
+                  data = json.load(f)
+          except Exception as e:
+              print(f"Failed to read {PATH}: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          assets = data.get("assets", []) or []
+          exts = [".zip", ".exe", ".msi"]
           pick = None
           for e in exts:
               for a in assets:
-                  if a['name'].lower().endswith(e):
+                  name = a.get("name","")
+                  if name.lower().endswith(e):
                       pick = a
                       break
               if pick:
                   break
-          if not pick:
-              pick = assets[0] if assets else None
+          if not pick and assets:
+              pick = assets[0]
           if not pick:
               print("No asset found", file=sys.stderr)
               sys.exit(1)
-          # Use the recommended way to set outputs
-          asset_name = pick['name']
-          asset_api_url = pick['download_url']
-          # Write outputs to GITHUB_OUTPUT
-          with open(os.environ.get('GITHUB_OUTPUT', '/tmp/github_output'), 'a') as gout:
-              gout.write(f"asset_name={asset_name}\n")
-              gout.write(f"asset_api_url={asset_api_url}\n")
-          # Also echo so logs show the chosen asset
+
+          asset_name = pick.get("name")
+          asset_api_url = pick.get("download_url") or pick.get("browser_download_url") or ""
+
+          # Write outputs to GITHUB_OUTPUT so subsequent steps can use them
+          gout = os.environ.get("GITHUB_OUTPUT")
+          if gout:
+              with open(gout, "a") as out:
+                  out.write(f"asset_name={asset_name}\n")
+                  out.write(f"asset_api_url={asset_api_url}\n")
+          else:
+              # Fallback: echo to stdout (useful for local testing)
+              print(f"asset_name={asset_name}")
+              print(f"asset_api_url={asset_api_url}")
+
+          # Also print for logs
           print(f"Selected asset: {asset_name}")
           PY
 
@@ -66,9 +87,11 @@ jobs:
           set -e
           FNAME="${{ steps.pick.outputs.asset_name }}"
           TAG="${{ steps.getrel.outputs_tag_name }}"
+
           # Get target release by tag (404 if missing)
           echo "Checking target release for tag $TAG"
           r=$(curl -s -H "Authorization: token $TARGET_PAT" "https://api.github.com/repos/$TARGET_REPO/releases/tags/$TAG" || true)
+
           if echo "$r" | grep -q '"id":'; then
             REL_ID=$(echo "$r" | jq -r .id)
             UPLOAD_URL=$(echo "$r" | jq -r .upload_url)
@@ -80,7 +103,9 @@ jobs:
             REL_ID=$(echo "$create" | jq -r .id)
             UPLOAD_URL=$(echo "$create" | jq -r .upload_url)
           fi
+
           echo "Target release id: $REL_ID"
+
           # Delete existing asset if present
           ASSETS=$(curl -s -H "Authorization: token $TARGET_PAT" "https://api.github.com/repos/$TARGET_REPO/releases/$REL_ID/assets")
           EXISTING_ID=$(echo "$ASSETS" | jq -r --arg NAME "$FNAME" '.[] | select(.name==$NAME) | .id' || true)
@@ -88,10 +113,11 @@ jobs:
             echo "Deleting existing asset id $EXISTING_ID"
             curl -s -X DELETE -H "Authorization: token $TARGET_PAT" "https://api.github.com/repos/$TARGET_REPO/releases/assets/$EXISTING_ID"
           fi
+
           # Upload new asset
           UPLOAD_BASE=$(echo "$UPLOAD_URL" | sed 's/{.*//')
-          mime=$(python -c "import mimetypes,sys;print(mimetypes.guess_type('$FNAME')[0] or 'application/octet-stream')")
+          mime=$(python3 -c "import mimetypes,sys;print(mimetypes.guess_type('$FNAME')[0] or 'application/octet-stream')")
           echo "Uploading $FNAME..."
           curl -s --data-binary @"$FNAME" -H "Authorization: token $TARGET_PAT" -H "Content-Type: $mime" \
-            "$UPLOAD_BASE?name=$(python -c "import urllib.parse,sys;print(urllib.parse.quote('''$FNAME'''))")"
+            "$UPLOAD_BASE?name=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote('''$FNAME'''))")"
           echo "Upload done"
