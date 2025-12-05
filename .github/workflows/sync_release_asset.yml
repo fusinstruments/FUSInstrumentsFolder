@@ -16,68 +16,68 @@ jobs:
             const rel = context.payload.release;
             return {
               tag_name: rel.tag_name,
-              assets: rel.assets.map(a => ({name: a.name, download_url: a.url, browser_download_url: a.browser_download_url}))
+              assets: rel.assets.map(a => ({
+                name: a.name,
+                download_url: a.url,
+                browser_download_url: a.browser_download_url
+              }))
             };
 
       - name: Pick asset name
         id: pick
         run: |
-          # Write the JSON safely to a temporary file (prevents quoting issues)
-          printf '%s' '${{ toJson(steps.getrel.outputs) }}' > /tmp/release_info.json
+          # Write the release info JSON to a file safely
+          echo '${{ toJson(steps.getrel.outputs) }}' > /tmp/release_info.json
 
-          # Read that file in Python and write outputs to GITHUB_OUTPUT
+          # Use Python to read the file and pick the asset
           python3 - <<'PY'
-          import json
-          import os
-          import sys
+import json
+import os
+import sys
 
-          PATH = "/tmp/release_info.json"
-          try:
-              with open(PATH, "r", encoding="utf-8") as f:
-                  data = json.load(f)
-          except Exception as e:
-              print(f"Failed to read {PATH}: {e}", file=sys.stderr)
-              sys.exit(1)
+try:
+    with open("/tmp/release_info.json", "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception as e:
+    print(f"Failed to read JSON: {e}", file=sys.stderr)
+    sys.exit(1)
 
-          assets = data.get("assets", []) or []
-          exts = [".zip", ".exe", ".msi"]
-          pick = None
-          for e in exts:
-              for a in assets:
-                  name = a.get("name","")
-                  if name.lower().endswith(e):
-                      pick = a
-                      break
-              if pick:
-                  break
-          if not pick and assets:
-              pick = assets[0]
-          if not pick:
-              print("No asset found", file=sys.stderr)
-              sys.exit(1)
+assets = data.get("assets", [])
+exts = [".zip", ".exe", ".msi"]
+pick = None
+for ext in exts:
+    for a in assets:
+        name = a.get("name","")
+        if name.lower().endswith(ext):
+            pick = a
+            break
+    if pick:
+        break
+if not pick and assets:
+    pick = assets[0]
+if not pick:
+    print("No asset found", file=sys.stderr)
+    sys.exit(1)
 
-          asset_name = pick.get("name")
-          asset_api_url = pick.get("download_url") or pick.get("browser_download_url") or ""
+asset_name = pick.get("name")
+asset_api_url = pick.get("download_url") or pick.get("browser_download_url") or ""
 
-          # Write outputs to GITHUB_OUTPUT so subsequent steps can use them
-          gout = os.environ.get("GITHUB_OUTPUT")
-          if gout:
-              with open(gout, "a") as out:
-                  out.write(f"asset_name={asset_name}\n")
-                  out.write(f"asset_api_url={asset_api_url}\n")
-          else:
-              # Fallback: echo to stdout (useful for local testing)
-              print(f"asset_name={asset_name}")
-              print(f"asset_api_url={asset_api_url}")
+# Write outputs for GitHub Actions
+gout = os.environ.get("GITHUB_OUTPUT")
+if gout:
+    with open(gout, "a") as f:
+        f.write(f"asset_name={asset_name}\n")
+        f.write(f"asset_api_url={asset_api_url}\n")
 
-          # Also print for logs
-          print(f"Selected asset: {asset_name}")
-          PY
+print(f"Selected asset: {asset_name}")
+PY
 
       - name: Download asset (stream)
         run: |
-          # Use the API asset URL and Accept: application/octet-stream to stream (works for private)
-          curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/octet-stream" -o "${{ steps.pick.outputs.asset_name }}" "${{ steps.pick.outputs.asset_api_url }}"
+          curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                 -H "Accept: application/octet-stream" \
+                 -o "${{ steps.pick.outputs.asset_name }}" \
+                 "${{ steps.pick.outputs.asset_api_url }}"
 
       - name: Upload to target repo (delete existing and upload)
         env:
@@ -88,36 +88,36 @@ jobs:
           FNAME="${{ steps.pick.outputs.asset_name }}"
           TAG="${{ steps.getrel.outputs_tag_name }}"
 
-          # Get target release by tag (404 if missing)
-          echo "Checking target release for tag $TAG"
-          r=$(curl -s -H "Authorization: token $TARGET_PAT" "https://api.github.com/repos/$TARGET_REPO/releases/tags/$TAG" || true)
+          # Get target release by tag
+          r=$(curl -s -H "Authorization: token $TARGET_PAT" \
+               "https://api.github.com/repos/$TARGET_REPO/releases/tags/$TAG" || true)
 
           if echo "$r" | grep -q '"id":'; then
-            REL_ID=$(echo "$r" | jq -r .id)
-            UPLOAD_URL=$(echo "$r" | jq -r .upload_url)
+              REL_ID=$(echo "$r" | jq -r .id)
+              UPLOAD_URL=$(echo "$r" | jq -r .upload_url)
           else
-            echo "Creating release $TAG in $TARGET_REPO"
-            create=$(curl -s -X POST -H "Authorization: token $TARGET_PAT" -H "Content-Type: application/json" \
-              -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"Automated sync from AUREUS_V2\",\"prerelease\":false}" \
-              "https://api.github.com/repos/$TARGET_REPO/releases")
-            REL_ID=$(echo "$create" | jq -r .id)
-            UPLOAD_URL=$(echo "$create" | jq -r .upload_url)
+              create=$(curl -s -X POST -H "Authorization: token $TARGET_PAT" \
+                -H "Content-Type: application/json" \
+                -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"Automated sync from AUREUS_V2\",\"prerelease\":false}" \
+                "https://api.github.com/repos/$TARGET_REPO/releases")
+              REL_ID=$(echo "$create" | jq -r .id)
+              UPLOAD_URL=$(echo "$create" | jq -r .upload_url)
           fi
 
-          echo "Target release id: $REL_ID"
-
           # Delete existing asset if present
-          ASSETS=$(curl -s -H "Authorization: token $TARGET_PAT" "https://api.github.com/repos/$TARGET_REPO/releases/$REL_ID/assets")
+          ASSETS=$(curl -s -H "Authorization: token $TARGET_PAT" \
+                   "https://api.github.com/repos/$TARGET_REPO/releases/$REL_ID/assets")
           EXISTING_ID=$(echo "$ASSETS" | jq -r --arg NAME "$FNAME" '.[] | select(.name==$NAME) | .id' || true)
           if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
-            echo "Deleting existing asset id $EXISTING_ID"
-            curl -s -X DELETE -H "Authorization: token $TARGET_PAT" "https://api.github.com/repos/$TARGET_REPO/releases/assets/$EXISTING_ID"
+              curl -s -X DELETE -H "Authorization: token $TARGET_PAT" \
+                   "https://api.github.com/repos/$TARGET_REPO/releases/assets/$EXISTING_ID"
           fi
 
           # Upload new asset
           UPLOAD_BASE=$(echo "$UPLOAD_URL" | sed 's/{.*//')
-          mime=$(python3 -c "import mimetypes,sys;print(mimetypes.guess_type('$FNAME')[0] or 'application/octet-stream')")
-          echo "Uploading $FNAME..."
-          curl -s --data-binary @"$FNAME" -H "Authorization: token $TARGET_PAT" -H "Content-Type: $mime" \
-            "$UPLOAD_BASE?name=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote('''$FNAME'''))")"
+          mime=$(python3 -c "import mimetypes; print(mimetypes.guess_type('$FNAME')[0] or 'application/octet-stream')")
+          curl -s --data-binary @"$FNAME" \
+               -H "Authorization: token $TARGET_PAT" \
+               -H "Content-Type: $mime" \
+               "$UPLOAD_BASE?name=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$FNAME'''))")"
           echo "Upload done"
