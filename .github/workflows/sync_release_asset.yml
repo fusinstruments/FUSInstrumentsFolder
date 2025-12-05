@@ -31,46 +31,46 @@ jobs:
 
           # Use Python to read the file and pick the asset
           python3 - <<'PY'
-import json
-import os
-import sys
-
-try:
-    with open("/tmp/release_info.json", "r", encoding="utf-8") as f:
-        data = json.load(f)
-except Exception as e:
-    print(f"Failed to read JSON: {e}", file=sys.stderr)
-    sys.exit(1)
-
-assets = data.get("assets", [])
-exts = [".zip", ".exe", ".msi"]
-pick = None
-for ext in exts:
-    for a in assets:
-        name = a.get("name","")
-        if name.lower().endswith(ext):
-            pick = a
-            break
-    if pick:
-        break
-if not pick and assets:
-    pick = assets[0]
-if not pick:
-    print("No asset found", file=sys.stderr)
-    sys.exit(1)
-
-asset_name = pick.get("name")
-asset_api_url = pick.get("download_url") or pick.get("browser_download_url") or ""
-
-# Write outputs for GitHub Actions
-gout = os.environ.get("GITHUB_OUTPUT")
-if gout:
-    with open(gout, "a") as f:
-        f.write(f"asset_name={asset_name}\n")
-        f.write(f"asset_api_url={asset_api_url}\n")
-
-print(f"Selected asset: {asset_name}")
-PY
+          import json
+          import os
+          import sys
+          
+          try:
+              with open("/tmp/release_info.json", "r", encoding="utf-8") as f:
+                  data = json.load(f)
+          except Exception as e:
+              print(f"Failed to read JSON: {e}", file=sys.stderr)
+              sys.exit(1)
+          
+          assets = data.get("assets", [])
+          exts = [".zip", ".exe", ".msi"]
+          pick = None
+          for ext in exts:
+              for a in assets:
+                  name = a.get("name","")
+                  if name.lower().endswith(ext):
+                      pick = a
+                      break
+              if pick:
+                  break
+          if not pick and assets:
+              pick = assets[0]
+          if not pick:
+              print("No asset found", file=sys.stderr)
+              sys.exit(1)
+          
+          asset_name = pick.get("name")
+          asset_api_url = pick.get("download_url") or pick.get("browser_download_url") or ""
+          
+          # Write outputs for GitHub Actions
+          gout = os.environ.get("GITHUB_OUTPUT")
+          if gout:
+              with open(gout, "a") as f:
+                  f.write(f"asset_name={asset_name}\n")
+                  f.write(f"asset_api_url={asset_api_url}\n")
+          
+          print(f"Selected asset: {asset_name}")
+          PY
 
       - name: Download asset (stream)
         run: |
