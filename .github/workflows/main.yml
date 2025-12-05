@@ -18,34 +18,46 @@ jobs:
               tag_name: rel.tag_name,
               assets: rel.assets.map(a => ({name: a.name, download_url: a.url, browser_download_url: a.browser_download_url}))
             };
+
       - name: Pick asset name
         id: pick
         run: |
           python - <<'PY'
-import json,sys
-data = json.loads('${{ toJson(steps.getrel.outputs) }}')
-assets = data['assets']
-# pick first matching extension
-exts = ['.zip','.exe','.msi']
-pick = None
-for e in exts:
-    for a in assets:
-        if a['name'].lower().endswith(e):
-            pick = a
-            break
-    if pick: break
-if not pick:
-    pick = assets[0] if assets else None
-if not pick:
-    print("::error ::No asset found")
-    sys.exit(1)
-print("::set-output name=asset_name::"+pick['name'])
-print("::set-output name=asset_api_url::"+pick['download_url'])
-PY
+          import json
+          import sys
+          data = json.loads('${{ toJson(steps.getrel.outputs) }}')
+          assets = data.get('assets', [])
+          # pick first matching extension
+          exts = ['.zip', '.exe', '.msi']
+          pick = None
+          for e in exts:
+              for a in assets:
+                  if a['name'].lower().endswith(e):
+                      pick = a
+                      break
+              if pick:
+                  break
+          if not pick:
+              pick = assets[0] if assets else None
+          if not pick:
+              print("No asset found", file=sys.stderr)
+              sys.exit(1)
+          # Use the recommended way to set outputs
+          asset_name = pick['name']
+          asset_api_url = pick['download_url']
+          # Write outputs to GITHUB_OUTPUT
+          with open(os.environ.get('GITHUB_OUTPUT', '/tmp/github_output'), 'a') as gout:
+              gout.write(f"asset_name={asset_name}\n")
+              gout.write(f"asset_api_url={asset_api_url}\n")
+          # Also echo so logs show the chosen asset
+          print(f"Selected asset: {asset_name}")
+          PY
+
       - name: Download asset (stream)
         run: |
           # Use the API asset URL and Accept: application/octet-stream to stream (works for private)
           curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/octet-stream" -o "${{ steps.pick.outputs.asset_name }}" "${{ steps.pick.outputs.asset_api_url }}"
+
       - name: Upload to target repo (delete existing and upload)
         env:
           TARGET_REPO: fusinstruments/FUSInstrumentsFolder
